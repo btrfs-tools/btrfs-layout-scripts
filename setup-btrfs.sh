@@ -199,9 +199,23 @@ if [[ ${#MAPS[@]} -eq 0 ]]; then
 fi
 
 # --- Interaktive Auswahl: welche der noch offenen Subvolumes anlegen? ---
-# Alle offenen sind vorausgewählt. Abgewählte Pfade bekommen kein eigenes
-# Subvolume und bleiben einfach Teil von @ (Root) - das Skript braucht dafür
-# keine Sonderbehandlung, da alles Weitere aus MAPS abgeleitet wird.
+# Universell sinnvolle Subvolumes sind vorausgewählt (klein/leer auf so gut
+# wie jedem Debian-Server, so gut wie nie schaedlich). Alles, was von der
+# konkreten Serverrolle oder dem installierten Software-Stack abhaengt
+# (Mail-Spool, Webserver-Docroot, Container-Engines, Datenbanken), startet
+# abgewaehlt, bleibt aber frei anwaehlbar. Abgewaehlte Pfade bekommen kein
+# eigenes Subvolume und bleiben einfach Teil von @ (Root) - das Skript
+# braucht dafuer keine Sonderbehandlung, da alles Weitere aus MAPS
+# abgeleitet wird.
+declare -A DEFAULT_ON=(
+  [@root]=1
+  [@home]=1
+  [@log]=1
+  [@cache]=1
+  [@tmp_var]=1
+  [@tmp]=1
+)
+
 echo ">>> Noch offene Subvolumes:"
 for entry in "${MAPS[@]}"; do
   echo "    ${entry%%:*} -> ${entry##*:}"
@@ -211,10 +225,13 @@ if [[ -t 0 && -t 1 ]]; then
   need_pkg whiptail whiptail
   CHECKLIST_ARGS=()
   for entry in "${MAPS[@]}"; do
-    CHECKLIST_ARGS+=("${entry##*:}" "${entry%%:*}" "ON")
+    sub="${entry##*:}"
+    state="OFF"
+    [[ -n "${DEFAULT_ON[$sub]:-}" ]] && state="ON"
+    CHECKLIST_ARGS+=("$sub" "${entry%%:*}" "$state")
   done
   SELECTED=$(whiptail --title "Btrfs-Subvolumes auswählen" \
-    --checklist "Alle noch offenen Subvolumes sind vorausgewählt. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
+    --checklist "Universell sinnvolle Subvolumes sind vorausgewählt, der Rest hängt vom Software-Stack ab (Datenbanken, Docker/Podman, Webserver-Docroot) und startet abgewählt. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
     24 78 14 \
     "${CHECKLIST_ARGS[@]}" \
     3>&1 1>&2 2>&3) || { echo "Abgebrochen." >&2; umount "$MNT"; exit 1; }
@@ -233,7 +250,14 @@ if [[ -t 0 && -t 1 ]]; then
   MAPS=("${FILTERED_MAPS[@]}")
   echo ">>> Ausgewählt: ${#MAPS[@]} Subvolumes."
 else
-  echo ">>> Kein interaktives Terminal erkannt - alle offenen Subvolumes werden angelegt (kein Auswahldialog)."
+  echo ">>> Kein interaktives Terminal erkannt - nur die universell sinnvollen Subvolumes werden angelegt (kein Auswahldialog)."
+  FILTERED_MAPS=()
+  for entry in "${MAPS[@]}"; do
+    sub="${entry##*:}"
+    [[ -n "${DEFAULT_ON[$sub]:-}" ]] && FILTERED_MAPS+=("$entry")
+  done
+  MAPS=("${FILTERED_MAPS[@]}")
+  echo ">>> Ausgewählt: ${#MAPS[@]} Subvolumes."
 fi
 
 if [[ ${#MAPS[@]} -eq 0 ]]; then
