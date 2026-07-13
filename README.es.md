@@ -15,6 +15,8 @@ En un sistema basado en Debian con root en Btrfs, el script:
 - Detecta el dispositivo root actual con `findmnt` (por ejemplo `/dev/vda2[/@rootfs]` → `/dev/vda2`).
 - Monta el nivel superior de Btrfs (`subvolid=5`) en `/mnt/btrfs-root`.
 - Comprueba el espacio libre de antemano (cada byte en `/` se duplica brevemente durante la migración) y aborta si el espacio es insuficiente.
+- Aborta de inmediato si `/` ya se ejecuta desde un subvolumen con nombre, o si alguna ruta destino ya está montada por separado — señales de una migración ya (parcialmente) realizada, donde volver a ejecutar el script haría más daño que bien.
+- Pide confirmación explícita en una terminal interactiva (escribir "ja") antes de cambiar nada, con una advertencia sobre lo que hace el script y que un fallo puede dejar el sistema sin arrancar. Se omite sin terminal (ejecuciones automatizadas).
 - Muestra un diálogo de selección interactivo (`whiptail`) si se ejecuta en una terminal: todos los subvolúmenes están preseleccionados, puedes deseleccionar los que no quieras — las rutas deseleccionadas simplemente se quedan en `@` sin subvolumen propio. Sin terminal interactiva (por ejemplo, ejecuciones automatizadas), se crean todos los subvolúmenes sin preguntar.
 - Detiene servicios conocidos (`mongod`, `mysql`, `postgresql`, `docker`) antes de copiar sus datos si están activos, y los reinicia después — para una copia consistente en lugar de archivos a medio escribir.
 - Crea (de forma idempotente) los siguientes subvolúmenes:

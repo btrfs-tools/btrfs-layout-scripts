@@ -32,6 +32,19 @@ fi
 
 ROOT_DEV=${ROOT_SRC%%[*}
 
+# --- Bereits migriertes System erkennen ---
+# Wenn / schon von einem benannten Subvolume laeuft (z.B. .../@ statt dem
+# nackten Top-Level), wurde entweder dieses Skript schon einmal ausgefuehrt
+# und das System bereits neu gestartet, oder es liegt ohnehin eine andere,
+# absichtliche Subvolume-Struktur vor. Ein erneuter Lauf ist in beiden
+# Faellen nicht das, was dieses Skript koennen soll - Abbruch statt Raten.
+if [[ "$ROOT_SRC" == *"["* ]]; then
+  echo "FEHLER: / läuft bereits von einem benannten Subvolume (${ROOT_SRC})." >&2
+  echo "Dieses Skript ist für den einmaligen Umstieg von einer flachen Btrfs-Root gedacht." >&2
+  echo "Ein erneuter Lauf auf einem bereits (teilweise) migrierten System wird nicht unterstützt." >&2
+  exit 1
+fi
+
 FSTYPE=$(findmnt -no FSTYPE / || true)
 if [[ "$FSTYPE" != "btrfs" ]]; then
   echo "/ ist kein Btrfs-Dateisystem (FSTYPE=$FSTYPE). Abbruch." >&2
@@ -42,6 +55,26 @@ UUID=$(blkid -s UUID -o value "$ROOT_DEV" || true)
 if [[ -z "$UUID" ]]; then
   echo "Konnte UUID von $ROOT_DEV nicht ermitteln. Abbruch." >&2
   exit 1
+fi
+
+# --- Ausdrückliche Bestätigung, bevor irgendetwas verändert wird ---
+echo
+echo "!!! ACHTUNG !!!"
+echo "Dieses Skript modifiziert /etc/fstab und /etc/default/grub und kopiert das"
+echo "komplette Root-Dateisystem in neue Subvolumes. Der eigentliche Root-Wechsel"
+echo "wird erst mit einem Neustart wirksam. Ein Fehlschlag kann das System"
+echo "unbootbar machen; ein Rollback ist dann nur manuell über eine Rescue-Konsole"
+echo "möglich (die alte fstab wird zwar gesichert, aber nicht automatisch"
+echo "zurückgespielt)."
+echo
+if [[ -t 0 ]]; then
+  read -r -p "Backup vorhanden und bereit für einen Neustart? Zum Fortfahren exakt 'ja' eingeben: " CONFIRM
+  if [[ "$CONFIRM" != "ja" ]]; then
+    echo "Abgebrochen." >&2
+    exit 1
+  fi
+else
+  echo ">>> Kein interaktives Terminal erkannt – Bestätigung übersprungen (automatisierter Lauf)."
 fi
 
 MNT=/mnt/btrfs-root
@@ -111,6 +144,27 @@ declare -a MAPS=(
 "/var/lib/docker/volumes:@docker-volumes"
 "/var/lib/containers/storage/volumes:@containers-volumes"
 )
+
+# --- Bereits separat gemountete Zielpfade erkennen ---
+# Falls z.B. schon einmal 'mount -a' gegen eine vorher erzeugte fstab gelaufen
+# ist (oder ein Zielpfad aus anderem Grund schon ein eigener Mount ist), wuerde
+# ein erneuter Lauf Verzeichnisse auf sich selbst synchronisieren, Dienste
+# unnoetig neu starten und die fstab weiter zumuellen. Lieber hart abbrechen.
+for entry in "${MAPS[@]}"; do
+  src="${entry%%:*}"
+  if [[ -d "$src" ]]; then
+    this_src=$(findmnt -no SOURCE "$src" 2>/dev/null || true)
+    if [[ -n "$this_src" && "$this_src" != "$ROOT_SRC" ]]; then
+      echo "FEHLER: $src ist bereits separat gemountet (${this_src})." >&2
+      echo "Sieht nach einer schon (mind. teilweise) durchgefuehrten Migration aus," >&2
+      echo "oder $src ist absichtlich ein eigener Mount aus anderem Grund." >&2
+      echo "Bitte pruefen; dieses Skript setzt eine flache Root ohne Extra-Mounts voraus." >&2
+      umount "$MNT"
+      exit 1
+    fi
+  fi
+done
+echo ">>> Keine bereits separat gemounteten Zielpfade gefunden – ok."
 
 # Mount-Optionen je Subvolume (Datenbanken/Container-Volumes: nodatacow statt
 # compress/autodefrag, da Copy-on-Write und Kompression sich schlecht mit
