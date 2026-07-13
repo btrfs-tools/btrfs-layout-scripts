@@ -32,19 +32,6 @@ fi
 
 ROOT_DEV=${ROOT_SRC%%[*}
 
-# --- Bereits migriertes System erkennen ---
-# Wenn / schon von einem benannten Subvolume laeuft (z.B. .../@ statt dem
-# nackten Top-Level), wurde entweder dieses Skript schon einmal ausgefuehrt
-# und das System bereits neu gestartet, oder es liegt ohnehin eine andere,
-# absichtliche Subvolume-Struktur vor. Ein erneuter Lauf ist in beiden
-# Faellen nicht das, was dieses Skript koennen soll - Abbruch statt Raten.
-if [[ "$ROOT_SRC" == *"["* ]]; then
-  echo "FEHLER: / läuft bereits von einem benannten Subvolume (${ROOT_SRC})." >&2
-  echo "Dieses Skript ist für den einmaligen Umstieg von einer flachen Btrfs-Root gedacht." >&2
-  echo "Ein erneuter Lauf auf einem bereits (teilweise) migrierten System wird nicht unterstützt." >&2
-  exit 1
-fi
-
 FSTYPE=$(findmnt -no FSTYPE / || true)
 if [[ "$FSTYPE" != "btrfs" ]]; then
   echo "/ ist kein Btrfs-Dateisystem (FSTYPE=$FSTYPE). Abbruch." >&2
@@ -57,18 +44,39 @@ if [[ -z "$UUID" ]]; then
   exit 1
 fi
 
+# --- Modus erkennen: erstmaliger Umstieg oder nachtraegliches Ergaenzen? ---
+# Wenn / schon von einem benannten Subvolume laeuft, wurde dieses Skript (oder
+# eine gleichwertige Migration) bereits erfolgreich durchgefuehrt. Root, GRUB
+# und das Default-Subvolume bleiben dann unangetastet; es werden nur noch
+# fehlende Subvolumes fuer noch nicht separat gemountete Pfade ergaenzt - ohne
+# Neustart, da kein Root-Wechsel mehr noetig ist.
+INCREMENTAL=0
+if [[ "$ROOT_SRC" == *"["* ]]; then
+  INCREMENTAL=1
+  echo ">>> / läuft bereits von einem benannten Subvolume (${ROOT_SRC})."
+  echo ">>> Inkrementeller Modus: nur fehlende Subvolumes werden ergänzt."
+  echo ">>> Root, GRUB und Default-Subvolume bleiben unangetastet, kein Neustart nötig."
+fi
+
 # --- Ausdrückliche Bestätigung, bevor irgendetwas verändert wird ---
 echo
 echo "!!! ACHTUNG !!!"
-echo "Dieses Skript modifiziert /etc/fstab und /etc/default/grub und kopiert das"
-echo "komplette Root-Dateisystem in neue Subvolumes. Der eigentliche Root-Wechsel"
-echo "wird erst mit einem Neustart wirksam. Ein Fehlschlag kann das System"
-echo "unbootbar machen; ein Rollback ist dann nur manuell über eine Rescue-Konsole"
-echo "möglich (die alte fstab wird zwar gesichert, aber nicht automatisch"
-echo "zurückgespielt)."
+if [[ $INCREMENTAL -eq 1 ]]; then
+  echo "Dieses Skript legt zusätzliche Subvolumes für noch nicht separat"
+  echo "gemountete Pfade an und kopiert deren aktuelle Daten hinein."
+  echo "Root, /etc/default/grub und das Default-Subvolume werden NICHT verändert;"
+  echo "ein Neustart ist nicht nötig."
+else
+  echo "Dieses Skript modifiziert /etc/fstab und /etc/default/grub und kopiert das"
+  echo "komplette Root-Dateisystem in neue Subvolumes. Der eigentliche Root-Wechsel"
+  echo "wird erst mit einem Neustart wirksam. Ein Fehlschlag kann das System"
+  echo "unbootbar machen; ein Rollback ist dann nur manuell über eine Rescue-Konsole"
+  echo "möglich (die alte fstab wird zwar gesichert, aber nicht automatisch"
+  echo "zurückgespielt)."
+fi
 echo
 if [[ -t 0 ]]; then
-  read -r -p "Backup vorhanden und bereit für einen Neustart? Zum Fortfahren exakt 'ja' eingeben: " CONFIRM
+  read -r -p "Backup vorhanden? Zum Fortfahren exakt 'ja' eingeben: " CONFIRM
   if [[ "$CONFIRM" != "ja" ]]; then
     echo "Abgebrochen." >&2
     exit 1
@@ -90,25 +98,6 @@ mount -o subvolid=5 "$ROOT_DEV" "$MNT"
 echo ">>> Vorhandene Subvolumes:"
 btrfs subvolume list "$MNT" || true
 
-# --- Speicherplatz-Check ---
-# Jedes Byte auf / wird beim Migrieren einmal dupliziert: entweder landet es
-# (unveraendert) in @, oder es landet zusaetzlich in seinem eigenen Subvolume,
-# waehrend die Originalkopie bis zum Reboot weiter belegt bleibt. Der Gesamt-
-# bedarf entspricht also ungefaehr der aktuell belegten Menge auf /, unabhaengig
-# davon, wie sie sich auf @ und die einzelnen Subvolumes aufteilt.
-echo ">>> Prüfe verfügbaren Speicherplatz"
-USED_BYTES=$(df --output=used -B1 / | tail -1 | tr -d '[:space:]')
-AVAIL_BYTES=$(df --output=avail -B1 / | tail -1 | tr -d '[:space:]')
-REQUIRED_WITH_MARGIN=$(( USED_BYTES * 110 / 100 ))
-if (( AVAIL_BYTES < REQUIRED_WITH_MARGIN )); then
-  echo "FEHLER: Nicht genug freier Speicherplatz für die Migration." >&2
-  echo "Benötigt (mit 10% Marge): ca. $(( REQUIRED_WITH_MARGIN / 1024 / 1024 )) MiB, verfügbar: $(( AVAIL_BYTES / 1024 / 1024 )) MiB." >&2
-  echo "Grund: Während der Migration existieren alle Daten kurzzeitig doppelt (altes flaches Volume + neue Subvolumes)." >&2
-  umount "$MNT"
-  exit 1
-fi
-echo ">>> Speicherplatz-Check bestanden (${AVAIL_BYTES} Bytes frei, ca. ${REQUIRED_WITH_MARGIN} Bytes benötigt)."
-
 create_subvol() {
   local name="$1"
   if btrfs subvolume list "$MNT" | awk '{print $NF}' | grep -qx "$name"; then
@@ -122,7 +111,7 @@ create_subvol() {
 # --- Mapping Quelle -> Subvolume (für Daten); einzige Quelle der Wahrheit für
 # Subvolume-Namen, Rsync-Ausschlüsse, Mountpoint-Vorbereitung, -Erzeugung und
 # fstab-Einträge (siehe SUBVOL_OPTS weiter unten) ---
-declare -a MAPS=(
+declare -a ALL_MAPS=(
 "/root:@root"
 "/home:@home"
 "/var/spool:@spool"
@@ -144,27 +133,6 @@ declare -a MAPS=(
 "/var/lib/docker/volumes:@docker-volumes"
 "/var/lib/containers/storage/volumes:@containers-volumes"
 )
-
-# --- Bereits separat gemountete Zielpfade erkennen ---
-# Falls z.B. schon einmal 'mount -a' gegen eine vorher erzeugte fstab gelaufen
-# ist (oder ein Zielpfad aus anderem Grund schon ein eigener Mount ist), wuerde
-# ein erneuter Lauf Verzeichnisse auf sich selbst synchronisieren, Dienste
-# unnoetig neu starten und die fstab weiter zumuellen. Lieber hart abbrechen.
-for entry in "${MAPS[@]}"; do
-  src="${entry%%:*}"
-  if [[ -d "$src" ]]; then
-    this_src=$(findmnt -no SOURCE "$src" 2>/dev/null || true)
-    if [[ -n "$this_src" && "$this_src" != "$ROOT_SRC" ]]; then
-      echo "FEHLER: $src ist bereits separat gemountet (${this_src})." >&2
-      echo "Sieht nach einer schon (mind. teilweise) durchgefuehrten Migration aus," >&2
-      echo "oder $src ist absichtlich ein eigener Mount aus anderem Grund." >&2
-      echo "Bitte pruefen; dieses Skript setzt eine flache Root ohne Extra-Mounts voraus." >&2
-      umount "$MNT"
-      exit 1
-    fi
-  fi
-done
-echo ">>> Keine bereits separat gemounteten Zielpfade gefunden – ok."
 
 # Mount-Optionen je Subvolume (Datenbanken/Container-Volumes: nodatacow statt
 # compress/autodefrag, da Copy-on-Write und Kompression sich schlecht mit
@@ -189,11 +157,52 @@ declare -A SUBVOL_OPTS=(
   [@containers-volumes]="noatime,nodatacow,space_cache=v2"
 )
 
-# --- Interaktive Auswahl: welche Subvolumes sollen angelegt werden? ---
-# Alle sind vorausgewählt. Abgewählte Pfade bekommen kein eigenes Subvolume
-# und bleiben einfach Teil von @ (Root) - das Skript braucht dafür keine
-# Sonderbehandlung, da alles Weitere aus MAPS abgeleitet wird.
-echo ">>> Geplante Subvolumes:"
+# --- Bereits erledigte bzw. anderweitig belegte Zielpfade aussortieren ---
+# Drei Kategorien statt eines Alles-oder-nichts-Abbruchs:
+#   - schon korrekt eingerichtet (genau das erwartete Subvolume gemountet)
+#     -> wird uebersprungen, taucht im Auswahldialog gar nicht erst auf.
+#   - anderweitig belegt (gemountet, aber nicht vom erwarteten Subvolume)
+#     -> wird uebersprungen und gewarnt, statt blind drueberzuschreiben.
+#   - noch offen (kein eigener Mount) -> Kandidat fuer die Auswahl.
+declare -a MAPS=()
+declare -a ALREADY_DONE=()
+declare -a CONFLICTS=()
+for entry in "${ALL_MAPS[@]}"; do
+  src="${entry%%:*}"
+  sub="${entry##*:}"
+  this_src=$(findmnt -no SOURCE "$src" 2>/dev/null || true)
+  if [[ -z "$this_src" ]]; then
+    MAPS+=("$entry")
+  elif [[ "$this_src" == *"[/${sub}]"* ]]; then
+    ALREADY_DONE+=("$entry")
+  else
+    CONFLICTS+=("$entry ($this_src)")
+  fi
+done
+
+if [[ ${#ALREADY_DONE[@]} -gt 0 ]]; then
+  echo ">>> Bereits eingerichtet (übersprungen):"
+  for entry in "${ALREADY_DONE[@]}"; do
+    echo "    ${entry%%:*} -> ${entry##*:}"
+  done
+fi
+if [[ ${#CONFLICTS[@]} -gt 0 ]]; then
+  echo ">>> WARNUNG: anderweitig belegt, wird übersprungen (bitte manuell prüfen):" >&2
+  for c in "${CONFLICTS[@]}"; do
+    echo "    $c" >&2
+  done
+fi
+if [[ ${#MAPS[@]} -eq 0 ]]; then
+  echo ">>> Nichts zu tun - alle Subvolumes sind bereits eingerichtet oder anderweitig belegt."
+  umount "$MNT"
+  exit 0
+fi
+
+# --- Interaktive Auswahl: welche der noch offenen Subvolumes anlegen? ---
+# Alle offenen sind vorausgewählt. Abgewählte Pfade bekommen kein eigenes
+# Subvolume und bleiben einfach Teil von @ (Root) - das Skript braucht dafür
+# keine Sonderbehandlung, da alles Weitere aus MAPS abgeleitet wird.
+echo ">>> Noch offene Subvolumes:"
 for entry in "${MAPS[@]}"; do
   echo "    ${entry%%:*} -> ${entry##*:}"
 done
@@ -205,7 +214,7 @@ if [[ -t 0 && -t 1 ]]; then
     CHECKLIST_ARGS+=("${entry##*:}" "${entry%%:*}" "ON")
   done
   SELECTED=$(whiptail --title "Btrfs-Subvolumes auswählen" \
-    --checklist "Alle Subvolumes sind vorausgewählt. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
+    --checklist "Alle noch offenen Subvolumes sind vorausgewählt. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
     24 78 14 \
     "${CHECKLIST_ARGS[@]}" \
     3>&1 1>&2 2>&3) || { echo "Abgebrochen." >&2; umount "$MNT"; exit 1; }
@@ -224,10 +233,46 @@ if [[ -t 0 && -t 1 ]]; then
   MAPS=("${FILTERED_MAPS[@]}")
   echo ">>> Ausgewählt: ${#MAPS[@]} Subvolumes."
 else
-  echo ">>> Kein interaktives Terminal erkannt - alle Subvolumes werden angelegt (kein Auswahldialog)."
+  echo ">>> Kein interaktives Terminal erkannt - alle offenen Subvolumes werden angelegt (kein Auswahldialog)."
 fi
 
-# --- alle Subvolumes anlegen (Root @ wird später befüllt) ---
+if [[ ${#MAPS[@]} -eq 0 ]]; then
+  echo ">>> Nichts ausgewählt - nichts zu tun."
+  umount "$MNT"
+  exit 0
+fi
+
+# --- Speicherplatz-Check ---
+# Initial-Modus: jedes Byte auf / wird einmal dupliziert (landet in @ oder
+# einem eigenen Subvolume), der Gesamtbedarf entspricht also ungefaehr der
+# aktuell belegten Menge auf /. Inkrementeller Modus: es wird nur das kopiert,
+# was tatsaechlich ausgewaehlt wurde, also die Summe genau dieser Verzeichnisse.
+echo ">>> Prüfe verfügbaren Speicherplatz"
+if [[ $INCREMENTAL -eq 1 ]]; then
+  NEEDED_BYTES=0
+  for entry in "${MAPS[@]}"; do
+    src="${entry%%:*}"
+    if [[ -d "$src" ]]; then
+      size=$(du -sb --one-file-system "$src" 2>/dev/null | awk '{print $1}')
+      NEEDED_BYTES=$(( NEEDED_BYTES + ${size:-0} ))
+    fi
+  done
+else
+  NEEDED_BYTES=$(df --output=used -B1 / | tail -1 | tr -d '[:space:]')
+fi
+AVAIL_BYTES=$(df --output=avail -B1 / | tail -1 | tr -d '[:space:]')
+REQUIRED_WITH_MARGIN=$(( NEEDED_BYTES * 110 / 100 ))
+if (( AVAIL_BYTES < REQUIRED_WITH_MARGIN )); then
+  echo "FEHLER: Nicht genug freier Speicherplatz." >&2
+  echo "Benötigt (mit 10% Marge): ca. $(( REQUIRED_WITH_MARGIN / 1024 / 1024 )) MiB, verfügbar: $(( AVAIL_BYTES / 1024 / 1024 )) MiB." >&2
+  echo "Grund: Die betroffenen Daten existieren kurzzeitig doppelt (alter Ort + neues Subvolume)." >&2
+  umount "$MNT"
+  exit 1
+fi
+echo ">>> Speicherplatz-Check bestanden (${AVAIL_BYTES} Bytes frei, ca. ${REQUIRED_WITH_MARGIN} Bytes benötigt)."
+
+# --- alle ausgewählten Subvolumes anlegen (Root @ existiert im inkrementellen
+# Modus schon; create_subvol ist idempotent, daher hier kein Unterschied) ---
 create_subvol "@"
 for entry in "${MAPS[@]}"; do
   create_subvol "${entry##*:}"
@@ -298,18 +343,6 @@ backup="${FSTAB}.backup-$(date +%F-%H%M%S)"
 echo ">>> Sicherung der aktuellen fstab nach $backup"
 cp "$FSTAB" "$backup"
 
-tmp="${FSTAB}.new"
-echo ">>> Kommentiere alte Btrfs-Root-Zeile(n) aus"
-
-awk '
-  $0 !~ /^[[:space:]]*#/ && $2 == "/" && $3 == "btrfs" {
-    print "#OLD-ROOT " $0
-    next
-  }
-  { print }
-' "$backup" > "$tmp"
-mv "$tmp" "$FSTAB"
-
 add_fstab_entry() {
   local mp="$1" sub="$2" opts="$3" pass="$4"
   if grep -Eq "^[^#[:space:]]+[[:space:]]+${mp}[[:space:]]+btrfs" "$FSTAB"; then
@@ -320,8 +353,21 @@ add_fstab_entry() {
   fi
 }
 
-# Root mit subvol=@
-add_fstab_entry / @ "noatime,compress=zstd,space_cache=v2" 1
+if [[ $INCREMENTAL -eq 0 ]]; then
+  tmp="${FSTAB}.new"
+  echo ">>> Kommentiere alte Btrfs-Root-Zeile(n) aus"
+  awk '
+    $0 !~ /^[[:space:]]*#/ && $2 == "/" && $3 == "btrfs" {
+      print "#OLD-ROOT " $0
+      next
+    }
+    { print }
+  ' "$backup" > "$tmp"
+  mv "$tmp" "$FSTAB"
+
+  # Root mit subvol=@
+  add_fstab_entry / @ "noatime,compress=zstd,space_cache=v2" 1
+fi
 
 # weitere Mounts (pass=2), Optionen aus SUBVOL_OPTS
 for entry in "${MAPS[@]}"; do
@@ -330,60 +376,64 @@ for entry in "${MAPS[@]}"; do
   add_fstab_entry "$src" "$sub" "${SUBVOL_OPTS[$sub]}" 2
 done
 
-# --- GRUB-Konfiguration im laufenden System anpassen ---
-if [[ -f /etc/default/grub ]]; then
-  if grep -q "@rootfs" /etc/default/grub; then
-    echo ">>> Ersetze @rootfs durch @ in /etc/default/grub"
-    sed -i 's/@rootfs/@/g' /etc/default/grub
+if [[ $INCREMENTAL -eq 0 ]]; then
+  # --- GRUB-Konfiguration im laufenden System anpassen ---
+  if [[ -f /etc/default/grub ]]; then
+    if grep -q "@rootfs" /etc/default/grub; then
+      echo ">>> Ersetze @rootfs durch @ in /etc/default/grub"
+      sed -i 's/@rootfs/@/g' /etc/default/grub
+    else
+      echo ">>> In /etc/default/grub kein @rootfs gefunden – ok."
+    fi
+
+    if command -v update-grub >/dev/null 2>&1; then
+      echo ">>> update-grub ausführen"
+      update-grub
+    elif command -v grub-mkconfig >/dev/null 2>&1; then
+      echo ">>> grub-mkconfig -o /boot/grub/grub.cfg ausführen"
+      grub-mkconfig -o /boot/grub/grub.cfg
+    else
+      echo ">>> Hinweis: Weder update-grub noch grub-mkconfig gefunden – bitte ggf. manuell GRUB-Konfiguration aktualisieren."
+    fi
   else
-    echo ">>> In /etc/default/grub kein @rootfs gefunden – ok."
+    echo "WARNUNG: /etc/default/grub nicht gefunden – GRUB nicht angepasst." >&2
   fi
 
-  if command -v update-grub >/dev/null 2>&1; then
-    echo ">>> update-grub ausführen"
-    update-grub
-  elif command -v grub-mkconfig >/dev/null 2>&1; then
-    echo ">>> grub-mkconfig -o /boot/grub/grub.cfg ausführen"
-    grub-mkconfig -o /boot/grub/grub.cfg
-  else
-    echo ">>> Hinweis: Weder update-grub noch grub-mkconfig gefunden – bitte ggf. manuell GRUB-Konfiguration aktualisieren."
-  fi
-else
-  echo "WARNUNG: /etc/default/grub nicht gefunden – GRUB nicht angepasst." >&2
+  # --- Root nach @ kopieren (JETZT, damit neue fstab & grub darin landen) ---
+  # Verzeichnisse, die ihr eigenes Subvolume bekommen, hier ausschliessen: sie
+  # wurden oben bereits per sync_dir befuellt und wuerden sonst redundant
+  # kopiert und per prepare_mp sofort wieder geloescht.
+  echo ">>> Kopiere aktuelles Root-Dateisystem nach @ (überschreibend)"
+  RSYNC_ROOT_EXCLUDES=(
+    --exclude="$MNT/*"
+    --exclude="/dev/*"
+    --exclude="/proc/*"
+    --exclude="/sys/*"
+    --exclude="/run/*"
+    --exclude="/mnt/*"
+    --exclude="/media/*"
+    --exclude="/lost+found"
+  )
+  for entry in "${ALL_MAPS[@]}"; do
+    RSYNC_ROOT_EXCLUDES+=(--exclude="${entry%%:*}/*")
+  done
+  rsync -axHAX --delete "${RSYNC_ROOT_EXCLUDES[@]}" / "$MNT/@"
 fi
-
-# --- Root nach @ kopieren (JETZT, damit neue fstab & grub darin landen) ---
-# Verzeichnisse, die ihr eigenes Subvolume bekommen, hier ausschliessen: sie
-# wurden oben bereits per sync_dir befuellt und wuerden sonst redundant
-# kopiert und per prepare_mp sofort wieder geloescht.
-echo ">>> Kopiere aktuelles Root-Dateisystem nach @ (überschreibend)"
-RSYNC_ROOT_EXCLUDES=(
-  --exclude="$MNT/*"
-  --exclude="/dev/*"
-  --exclude="/proc/*"
-  --exclude="/sys/*"
-  --exclude="/run/*"
-  --exclude="/mnt/*"
-  --exclude="/media/*"
-  --exclude="/lost+found"
-)
-for entry in "${MAPS[@]}"; do
-  RSYNC_ROOT_EXCLUDES+=(--exclude="${entry%%:*}/*")
-done
-rsync -axHAX --delete "${RSYNC_ROOT_EXCLUDES[@]}" / "$MNT/@"
 
 # --- Mountpoints im neuen Root (@) leeren, damit Subvolumes dort einhängen können ---
 # Verschachtelte Faelle (z.B. @containers-volumes wird unter
 # /var/lib/containers/storage/volumes eingehaengt, also INNERHALB von
 # @containers) brauchen den Platzhalter im Eltern-Subvolume, nicht in @ -
 # sonst fehlt das Mount-Zielverzeichnis nach dem Einhaengen des Elternteils.
+# Nutzt ALL_MAPS (nicht nur die ausgewaehlten), damit die Elternauflösung auch
+# im inkrementellen Modus korrekt auf bereits vorhandene Subvolumes verweist.
 parent_info_for() {
   # Gibt "SUBVOL:RELATIVER_PFAD" zurueck, z.B. "@containers:/storage/volumes"
-  # oder "@:/var/lib/containers", wenn kein Elternteil in MAPS gefunden wird.
+  # oder "@:/var/lib/containers", wenn kein Elternteil in ALL_MAPS gefunden wird.
   local target="$1"
   local best_prefix="" best_subvol="@"
   local entry src sub
-  for entry in "${MAPS[@]}"; do
+  for entry in "${ALL_MAPS[@]}"; do
     src="${entry%%:*}"
     sub="${entry##*:}"
     if [[ "$src" != "$target" && "$target" == "$src"/* && ${#src} -gt ${#best_prefix} ]]; then
@@ -410,7 +460,8 @@ for entry in "${MAPS[@]}"; do
   prepare_mp "${entry%%:*}"
 done
 
-# --- Default-Subvolume auf @ setzen ---
+# --- Default-Subvolume auf @ setzen (im inkrementellen Modus ohnehin schon
+# korrekt gesetzt; set-default ist idempotent, daher hier kein Unterschied) ---
 echo ">>> Setze Default-Subvolume auf @"
 set +e
 SUBVOL_ID=$(btrfs subvolume list "$MNT" | awk '$NF=="@" {print $2}')
@@ -446,12 +497,22 @@ fi
 echo ">>> fstab-Validierung bestanden."
 
 echo
-echo ">>> FERTIG."
-echo "Kontrolliere kurz mit:  cat /etc/fstab"
-echo "Wenn dort die neuen Btrfs-Zeilen stehen, dann:"
-echo "  mount -a"
-echo "Wenn keine Fehler kommen:"
-echo "  reboot"
-echo
-echo "Nach dem Reboot sollte / von subvol=@ und /home, /var/log, /var/lib/docker usw. von den jeweiligen Subvolumes kommen."
-echo "Die alte fstab liegt gesichert unter ${FSTAB}.backup-<Datum>."
+if [[ $INCREMENTAL -eq 1 ]]; then
+  echo ">>> Aktiviere die neuen Mounts sofort (kein Neustart nötig im inkrementellen Modus)"
+  systemctl daemon-reload
+  mount -a
+  echo ">>> FERTIG. Neue Subvolumes sind aktiv:"
+  for entry in "${MAPS[@]}"; do
+    findmnt -no TARGET,SOURCE,OPTIONS "${entry%%:*}" || true
+  done
+else
+  echo ">>> FERTIG."
+  echo "Kontrolliere kurz mit:  cat /etc/fstab"
+  echo "Wenn dort die neuen Btrfs-Zeilen stehen, dann:"
+  echo "  mount -a"
+  echo "Wenn keine Fehler kommen:"
+  echo "  reboot"
+  echo
+  echo "Nach dem Reboot sollte / von subvol=@ und /home, /var/log, /var/lib/docker usw. von den jeweiligen Subvolumes kommen."
+  echo "Die alte fstab liegt gesichert unter ${FSTAB}.backup-<Datum>."
+fi
