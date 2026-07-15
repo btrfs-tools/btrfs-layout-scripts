@@ -126,17 +126,28 @@ declare -a ALL_MAPS=(
 "/var/lib/mongodb:@mongodb"
 "/var/lib/mysql:@mysql"
 "/var/lib/postgresql:@postgresql"
+"/var/lib/chroma:@chroma"
+"/var/lib/stalwart:@stalwart"
+"/var/lib/elasticsearch:@elasticsearch"
+"/var/lib/opensearch:@opensearch"
+"/var/lib/clickhouse:@clickhouse"
+"/var/lib/cassandra:@cassandra"
+"/var/lib/couchdb:@couchdb"
+"/var/lib/neo4j:@neo4j"
+"/var/lib/rabbitmq:@rabbitmq"
 "/var/www:@www"
 # Feste, versionsunabhaengige Pfade fuer benannte Volumes von Docker/Podman
-# (getrennt von @docker/@containers, damit Volume-Daten nodatacow bekommen,
-# waehrend Image-Layer/Metadaten weiterhin von compress=zstd profitieren).
+# (getrennt von @docker/@containers, damit Volume-Daten gezielt von
+# Kompression ausgenommen werden koennen, waehrend Image-Layer/Metadaten
+# weiterhin von compress=zstd profitieren).
 "/var/lib/docker/volumes:@docker-volumes"
 "/var/lib/containers/storage/volumes:@containers-volumes"
 )
 
-# Mount-Optionen je Subvolume (Datenbanken/Container-Volumes: nodatacow statt
-# compress/autodefrag, da Copy-on-Write und Kompression sich schlecht mit
-# Random-Write-Mustern vertragen).
+# fstab-Mount-Optionen je Subvolume. Btrfs-Mountoptionen wie compress,
+# nodatacow und autodefrag sind nicht verlaesslich pro Subvolume steuerbar;
+# Datenbank-/Volume-Subvolumes bekommen deshalb unten per Inode-Property
+# "compression no" statt eigener fstab-Kompressionsoptionen.
 declare -A SUBVOL_OPTS=(
   [@root]="noatime,compress=zstd,space_cache=v2"
   [@home]="noatime,compress=zstd,space_cache=v2,autodefrag"
@@ -150,11 +161,40 @@ declare -A SUBVOL_OPTS=(
   [@containers]="noatime,compress=zstd,space_cache=v2"
   [@docker]="noatime,compress=zstd,space_cache=v2"
   [@www]="noatime,compress=zstd,space_cache=v2"
-  [@mongodb]="noatime,nodatacow,space_cache=v2"
-  [@mysql]="noatime,nodatacow,space_cache=v2"
-  [@postgresql]="noatime,nodatacow,space_cache=v2"
-  [@docker-volumes]="noatime,nodatacow,space_cache=v2"
-  [@containers-volumes]="noatime,nodatacow,space_cache=v2"
+  [@mongodb]="noatime,compress=zstd,space_cache=v2"
+  [@mysql]="noatime,compress=zstd,space_cache=v2"
+  [@postgresql]="noatime,compress=zstd,space_cache=v2"
+  [@chroma]="noatime,compress=zstd,space_cache=v2"
+  [@stalwart]="noatime,compress=zstd,space_cache=v2"
+  [@elasticsearch]="noatime,compress=zstd,space_cache=v2"
+  [@opensearch]="noatime,compress=zstd,space_cache=v2"
+  [@clickhouse]="noatime,compress=zstd,space_cache=v2"
+  [@cassandra]="noatime,compress=zstd,space_cache=v2"
+  [@couchdb]="noatime,compress=zstd,space_cache=v2"
+  [@neo4j]="noatime,compress=zstd,space_cache=v2"
+  [@rabbitmq]="noatime,compress=zstd,space_cache=v2"
+  [@docker-volumes]="noatime,compress=zstd,space_cache=v2"
+  [@containers-volumes]="noatime,compress=zstd,space_cache=v2"
+)
+
+# Diese Subvolumes behalten CoW und Checksums, werden aber per
+# btrfs-property von der Kompression ausgenommen. Die Property muss vor dem
+# Kopieren der Daten gesetzt werden, damit neue Dateien darunter sie erben.
+declare -A NO_COMPRESSION_SUBVOLS=(
+  [@mongodb]=1
+  [@mysql]=1
+  [@postgresql]=1
+  [@chroma]=1
+  [@stalwart]=1
+  [@elasticsearch]=1
+  [@opensearch]=1
+  [@clickhouse]=1
+  [@cassandra]=1
+  [@couchdb]=1
+  [@neo4j]=1
+  [@rabbitmq]=1
+  [@docker-volumes]=1
+  [@containers-volumes]=1
 )
 
 # --- Bereits erledigte bzw. anderweitig belegte Zielpfade aussortieren ---
@@ -216,22 +256,36 @@ declare -A DEFAULT_ON=(
   [@tmp]=1
 )
 
+checklist_desc_for() {
+  local src="$1" sub="$2"
+  if [[ -n "${DEFAULT_ON[$sub]:-}" ]]; then
+    echo "default: $src"
+  elif [[ -n "${NO_COMPRESSION_SUBVOLS[$sub]:-}" ]]; then
+    echo "no-compression: $src"
+  else
+    echo "optional: $src"
+  fi
+}
+
 echo ">>> Noch offene Subvolumes:"
 for entry in "${MAPS[@]}"; do
-  echo "    ${entry%%:*} -> ${entry##*:}"
+  src="${entry%%:*}"
+  sub="${entry##*:}"
+  echo "    $sub ($(checklist_desc_for "$src" "$sub"))"
 done
 
 if [[ -t 0 && -t 1 ]]; then
   need_pkg whiptail whiptail
   CHECKLIST_ARGS=()
   for entry in "${MAPS[@]}"; do
+    src="${entry%%:*}"
     sub="${entry##*:}"
     state="OFF"
     [[ -n "${DEFAULT_ON[$sub]:-}" ]] && state="ON"
-    CHECKLIST_ARGS+=("$sub" "${entry%%:*}" "$state")
+    CHECKLIST_ARGS+=("$sub" "$(checklist_desc_for "$src" "$sub")" "$state")
   done
   SELECTED=$(whiptail --title "Btrfs-Subvolumes auswählen" \
-    --checklist "Universell sinnvolle Subvolumes sind vorausgewählt, der Rest hängt vom Software-Stack ab (Datenbanken, Docker/Podman, Webserver-Docroot) und startet abgewählt. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
+    --checklist "Universell sinnvolle Subvolumes sind vorausgewählt. Einträge mit 'no-compression' behalten CoW/Prüfsummen, bekommen aber per Btrfs-Property compression=no vor der Datenkopie. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
     24 78 14 \
     "${CHECKLIST_ARGS[@]}" \
     3>&1 1>&2 2>&3) || { echo "Abgebrochen." >&2; umount "$MNT"; exit 1; }
@@ -302,6 +356,26 @@ for entry in "${MAPS[@]}"; do
   create_subvol "${entry##*:}"
 done
 
+set_no_compression_policy() {
+  local subvol="$1" target prop
+  [[ -n "${NO_COMPRESSION_SUBVOLS[$subvol]:-}" ]] || return 0
+
+  target="$MNT/$subvol"
+  echo ">>> Deaktiviere Btrfs-Kompression für neue Daten in $subvol"
+  btrfs property set "$target" compression no
+  prop=$(btrfs property get "$target" compression)
+  if [[ "$prop" != "compression=no" && "$prop" != "compression=none" ]]; then
+    echo "FEHLER: Konnte Kompression für $subvol nicht deaktivieren (Ist: ${prop:-<leer>})." >&2
+    echo "Abbruch, damit Daten nicht versehentlich mit falscher Kompressions-Policy kopiert werden." >&2
+    umount "$MNT"
+    exit 1
+  fi
+}
+
+for entry in "${MAPS[@]}"; do
+  set_no_compression_policy "${entry##*:}"
+done
+
 sync_dir() {
   local src="$1"    # z.B. /home
   local subvol="$2" # z.B. @home
@@ -321,8 +395,17 @@ sync_dir() {
 # halbgeschriebener Dateien bei aktiv laufenden Datenbanken/Containern) ---
 declare -A SRC_SERVICE=(
   ["/var/lib/mongodb"]="mongod"
-  ["/var/lib/mysql"]="mysql"
+  ["/var/lib/mysql"]="mariadb mysql"
   ["/var/lib/postgresql"]="postgresql"
+  ["/var/lib/chroma"]="chroma chromadb"
+  ["/var/lib/stalwart"]="stalwart-mail stalwart stalwart-server"
+  ["/var/lib/elasticsearch"]="elasticsearch"
+  ["/var/lib/opensearch"]="opensearch"
+  ["/var/lib/clickhouse"]="clickhouse-server clickhouse"
+  ["/var/lib/cassandra"]="cassandra"
+  ["/var/lib/couchdb"]="couchdb"
+  ["/var/lib/neo4j"]="neo4j"
+  ["/var/lib/rabbitmq"]="rabbitmq-server rabbitmq"
   ["/var/lib/docker"]="docker"
   ["/var/lib/docker/volumes"]="docker"
 )
@@ -331,15 +414,16 @@ declare -A ALREADY_HANDLED=()
 
 for entry in "${MAPS[@]}"; do
   src="${entry%%:*}"
-  svc="${SRC_SERVICE[$src]:-}"
-  if [[ -n "$svc" && -z "${ALREADY_HANDLED[$svc]:-}" ]]; then
-    ALREADY_HANDLED[$svc]=1
-    if systemctl is-active --quiet "$svc" 2>/dev/null; then
-      echo ">>> Stoppe $svc für eine konsistente Kopie"
-      systemctl stop "$svc"
-      STOPPED_SERVICES+=("$svc")
+  for svc in ${SRC_SERVICE[$src]:-}; do
+    if [[ -z "${ALREADY_HANDLED[$svc]:-}" ]]; then
+      ALREADY_HANDLED[$svc]=1
+      if systemctl is-active --quiet "$svc" 2>/dev/null; then
+        echo ">>> Stoppe $svc für eine konsistente Kopie"
+        systemctl stop "$svc"
+        STOPPED_SERVICES+=("$svc")
+      fi
     fi
-  fi
+  done
 done
 
 echo ">>> Übertrage /root, /home, /var/... in ihre Subvolumes"

@@ -18,7 +18,7 @@ On a Debian (or Debian-based) system with a Btrfs root filesystem, the script:
 - Detects a migration that's already (partly) done and automatically switches to an **incremental mode**: if `/` is already running from a named subvolume, root, GRUB, and the default subvolume are left untouched — only subvolumes for target paths that aren't separately mounted yet get added, active immediately, no reboot needed. Each target path is classified individually: already set up correctly (skipped, doesn't even show up in the selection dialog), occupied by something else (skipped with a warning, never overwritten), or still open (candidate for selection).
 - Explicitly asks for confirmation in an interactive terminal (type "ja") before changing anything, with a warning about what the script does and that a failure can leave the system unbootable. Skipped without a terminal (automated runs).
 - Shows an interactive selection dialog (`whiptail`) when run in a terminal: universally sensible subvolumes (`@root`, `@home`, `@log`, `@cache`, `@tmp_var`, `@tmp`) are pre-selected, everything that depends on the software stack (databases, Docker/Podman, web server docroot) starts deselected — both freely adjustable. Deselected paths simply stay part of `@` without their own subvolume. Without an interactive terminal (e.g. automated runs), only the universally sensible subvolumes are created without prompting.
-- Stops known services (`mongod`, `mysql`, `postgresql`, `docker`) before copying their data if they're currently running, and restarts them afterwards — for a consistent copy instead of half-written files.
+- Stops known database, datastore, and container services before copying their data if they're currently running, and restarts them afterwards — for a consistent copy instead of half-written files.
 - Creates the following subvolumes (idempotent; if they already exist, they are reused):
 
   - `@` (new root)
@@ -36,6 +36,15 @@ On a Debian (or Debian-based) system with a Btrfs root filesystem, the script:
   - `@mongodb`
   - `@mysql`
   - `@postgresql`
+  - `@chroma`
+  - `@stalwart`
+  - `@elasticsearch`
+  - `@opensearch`
+  - `@clickhouse`
+  - `@cassandra`
+  - `@couchdb`
+  - `@neo4j`
+  - `@rabbitmq`
   - `@docker-volumes`
   - `@containers-volumes`
   - `@www`
@@ -57,11 +66,20 @@ On a Debian (or Debian-based) system with a Btrfs root filesystem, the script:
   - `/var/lib/mongodb` → `@mongodb`
   - `/var/lib/mysql` → `@mysql`
   - `/var/lib/postgresql` → `@postgresql`
+  - `/var/lib/chroma` → `@chroma`
+  - `/var/lib/stalwart` → `@stalwart`
+  - `/var/lib/elasticsearch` → `@elasticsearch`
+  - `/var/lib/opensearch` → `@opensearch`
+  - `/var/lib/clickhouse` → `@clickhouse`
+  - `/var/lib/cassandra` → `@cassandra`
+  - `/var/lib/couchdb` → `@couchdb`
+  - `/var/lib/neo4j` → `@neo4j`
+  - `/var/lib/rabbitmq` → `@rabbitmq`
   - `/var/lib/docker/volumes` → `@docker-volumes`
   - `/var/lib/containers/storage/volumes` → `@containers-volumes`
   - `/var/www` → `@www`
 
-  Database subvolumes (`@mongodb`, `@mysql`, `@postgresql`) as well as named Docker/Podman volumes (`@docker-volumes`, `@containers-volumes`) are mounted with `nodatacow` instead of `compress=zstd`/`autodefrag` — copy-on-write and compression don't play well with databases' random-write patterns, and volumes can hold arbitrary workloads with the same characteristics. Image layers and metadata in `@docker`/`@containers` themselves are unaffected and stay compressed.
+  Database and datastore subvolumes (`@mongodb`, `@mysql`, `@postgresql`, `@chroma`, `@stalwart`, `@elasticsearch`, `@opensearch`, `@clickhouse`, `@cassandra`, `@couchdb`, `@neo4j`, `@rabbitmq`) as well as named Docker/Podman volumes (`@docker-volumes`, `@containers-volumes`) keep normal Btrfs mounts with CoW and checksums, but get `btrfs property set ... compression no` before data is copied. This avoids relying on per-subvolume `compress`/`nodatacow` fstab options, which Btrfs does not support reliably for mounts of the same filesystem. Image layers and metadata in `@docker`/`@containers` themselves stay on the normal compressed policy.
 
 - Prepares empty mountpoints inside the new root (`@`) so that the subvolumes can be mounted there.
 - Updates `/etc/fstab` in the running system:
@@ -97,7 +115,7 @@ The script will install the following packages if missing:
 - `rsync`
 - `btrfs-progs`
 
-> Simplest on a **fresh server installation**, since every directory is small/empty there. The script also works on already-running systems, **provided there's enough free disk space** (checked automatically — every byte on `/` is briefly duplicated during migration). For a consistent copy, known services (`mongod`, `mysql`, `postgresql`, `docker`) are automatically stopped before their respective data copy and restarted afterwards.
+> Simplest on a **fresh server installation**, since every directory is small/empty there. The script also works on already-running systems, **provided there's enough free disk space** (checked automatically — every byte on `/` is briefly duplicated during migration). For a consistent copy, known database, datastore, and container services are automatically stopped before their respective data copy and restarted afterwards.
 >
 > Still, on a running system: take a backup first, plan a maintenance window for the final reboot, and keep in mind that applications **outside** this list (e.g. Podman, a custom web server process with open files under `/srv` or `/var/www`) keep running during the copy and could in theory end up with an inconsistent snapshot in their subvolume.
 
