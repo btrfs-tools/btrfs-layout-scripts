@@ -25,8 +25,9 @@ Auf einem Debian- (oder Debian-basierten) System mit Btrfs-Root führt das Skrip
   - `btrbk`: Btrfs-Backups und Replikation per SSH.
   - `btrfsmaintenance`: geplante Scrub-, Balance-, Trim- und Defrag-Aufgaben.
   - `duperemove`: Deduplizierung gleicher Btrfs-Extents.
+  - `grub-btrfs`: Btrfs-Snapshots im GRUB-Bootmenü bootbar machen — **fortgeschritten**: setzt einen bereits eingerichteten Snapshot-Manager (Timeshift/Snapper) voraus und braucht danach manuell den aktivierten Dienst `grub-btrfsd`, damit neue Snapshots automatisch im Bootmenü erscheinen.
 
-  Es werden keine Snap- oder Flatpak-Pakete installiert, und die Tools werden nur installiert — nicht automatisch konfiguriert.
+  Die Tools werden nur installiert — nicht automatisch konfiguriert.
 - Legt (idempotent) folgende Subvolumes an:
 
   - `@` (neues Root)

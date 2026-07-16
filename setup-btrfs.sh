@@ -122,6 +122,7 @@ offer_optional_btrfs_tools() {
     "btrbk:Btrfs-Backups und Replikation per SSH"
     "btrfsmaintenance:Scrub, Balance, Trim und Defrag planen"
     "duperemove:Deduplizierung gleicher Btrfs-Extents"
+    "grub-btrfs:Btrfs-Snapshots im GRUB-Bootmenü bootbar machen"
   )
   local -a checklist_args=()
   local -a selected_tools=()
@@ -155,6 +156,7 @@ offer_optional_btrfs_tools() {
   echo ">>> Installiere optionale APT-Pakete: ${selected_tools[*]}"
   if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "${selected_tools[@]}"; then
     echo ">>> Optionale Tools installiert. Bitte Timeshift/Snapper/btrbk/btrfsmaintenance bei Bedarf manuell konfigurieren."
+    echo ">>> Hinweis grub-btrfs: zeigt Snapshots erst im GRUB-Menü an, wenn zusaetzlich ein Snapshot-Manager (Timeshift/Snapper) konfiguriert und der Dienst grub-btrfsd aktiviert ist."
   else
     echo "WARNUNG: Optionale Tool-Installation ist fehlgeschlagen. Das Btrfs-Setup wird fortgesetzt." >&2
   fi
@@ -174,7 +176,15 @@ declare -a ALL_MAPS=(
 "/tmp:@tmp"
 "/opt:@opt"
 "/var/lib/containers:@containers"
+# Feste, versionsunabhaengige Pfade fuer benannte Volumes von Docker/Podman
+# (getrennt von @docker/@containers, damit Volume-Daten gezielt von
+# Kompression ausgenommen werden koennen, waehrend Image-Layer/Metadaten
+# weiterhin von compress=zstd profitieren). Direkt hinter dem jeweiligen
+# Eltern-Subvolume einsortiert, damit die Zugehoerigkeit auch im
+# Auswahldialog erkennbar bleibt.
+"/var/lib/containers/storage/volumes:@containers-volumes"
 "/var/lib/docker:@docker"
+"/var/lib/docker/volumes:@docker-volumes"
 "/var/lib/mongodb:@mongodb"
 "/var/lib/mysql:@mysql"
 "/var/lib/postgresql:@postgresql"
@@ -189,12 +199,6 @@ declare -a ALL_MAPS=(
 "/var/lib/neo4j:@neo4j"
 "/var/lib/rabbitmq:@rabbitmq"
 "/var/www:@www"
-# Feste, versionsunabhaengige Pfade fuer benannte Volumes von Docker/Podman
-# (getrennt von @docker/@containers, damit Volume-Daten gezielt von
-# Kompression ausgenommen werden koennen, waehrend Image-Layer/Metadaten
-# weiterhin von compress=zstd profitieren).
-"/var/lib/docker/volumes:@docker-volumes"
-"/var/lib/containers/storage/volumes:@containers-volumes"
 )
 
 # fstab-Mount-Optionen je Subvolume. Btrfs-Mountoptionen wie compress,
@@ -250,6 +254,14 @@ declare -A NO_COMPRESSION_SUBVOLS=(
   [@rabbitmq]=1
   [@docker-volumes]=1
   [@containers-volumes]=1
+)
+
+# Volume-Subvolumes liegen INNERHALB ihres Eltern-Subvolumes und brauchen es
+# als eigenes Subvolume (sonst legt prepare_mp verwaiste Verzeichnisse unter
+# einem nie erzeugten Eltern-Subvolume an).
+declare -A VOLUME_PARENT=(
+  [@docker-volumes]=@docker
+  [@containers-volumes]=@containers
 )
 
 # --- Bereits erledigte bzw. anderweitig belegte Zielpfade aussortieren ---
@@ -312,14 +324,18 @@ declare -A DEFAULT_ON=(
 )
 
 checklist_desc_for() {
-  local src="$1" sub="$2"
+  local src="$1" sub="$2" category compression
   if [[ -n "${DEFAULT_ON[$sub]:-}" ]]; then
-    echo "default: $src"
-  elif [[ -n "${NO_COMPRESSION_SUBVOLS[$sub]:-}" ]]; then
-    echo "no-compression: $src"
+    category="default"
   else
-    echo "optional: $src"
+    category="optional"
   fi
+  if [[ -n "${NO_COMPRESSION_SUBVOLS[$sub]:-}" ]]; then
+    compression="no-compress"
+  else
+    compression="compress"
+  fi
+  echo "${category}, ${compression}: $src"
 }
 
 echo ">>> Noch offene Subvolumes:"
@@ -340,11 +356,35 @@ if [[ -t 0 && -t 1 ]]; then
     CHECKLIST_ARGS+=("$sub" "$(checklist_desc_for "$src" "$sub")" "$state")
   done
   SELECTED=$(whiptail --title "Btrfs-Subvolumes auswählen" \
-    --checklist "Universell sinnvolle Subvolumes sind vorausgewählt. Einträge mit 'no-compression' behalten CoW/Prüfsummen, bekommen aber per Btrfs-Property compression=no vor der Datenkopie. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
+    --checklist "Universell sinnvolle Subvolumes sind vorausgewählt. Einträge mit 'no-compress' behalten CoW/Prüfsummen, bekommen aber per Btrfs-Property compression=no vor der Datenkopie. Volume-Subvolumes (*-volumes) aktivieren automatisch ihr Eltern-Subvolume. Leertaste = ab-/anwählen, Enter = bestätigen.\nAbgewählte Pfade bleiben einfach Teil von @ (Root)." \
     24 78 14 \
     "${CHECKLIST_ARGS[@]}" \
     3>&1 1>&2 2>&3) || { echo "Abgebrochen." >&2; umount "$MNT"; exit 1; }
   eval "SELECTED_ARR=($SELECTED)"
+
+  # Volume-Subvolumes brauchen ihr Eltern-Subvolume (siehe VOLUME_PARENT
+  # oben); wird nur das Volume gewaehlt, muss das Elternteil automatisch
+  # ergaenzt werden - sonst legt prepare_mp spaeter verwaiste Verzeichnisse
+  # unter einem nie erzeugten Eltern-Subvolume an.
+  for sel in "${SELECTED_ARR[@]}"; do
+    parent="${VOLUME_PARENT[$sel]:-}"
+    [[ -n "$parent" ]] || continue
+
+    already=0
+    for s in "${SELECTED_ARR[@]}"; do
+      [[ "$s" == "$parent" ]] && { already=1; break; }
+    done
+    [[ $already -eq 1 ]] && continue
+
+    candidate=0
+    for entry in "${MAPS[@]}"; do
+      [[ "${entry##*:}" == "$parent" ]] && { candidate=1; break; }
+    done
+    if [[ $candidate -eq 1 ]]; then
+      echo ">>> $sel gewählt -> $parent automatisch mitausgewählt (Volume liegt darin)."
+      SELECTED_ARR+=("$parent")
+    fi
+  done
 
   FILTERED_MAPS=()
   for entry in "${MAPS[@]}"; do
