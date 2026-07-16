@@ -13,18 +13,19 @@
 Auf einem Debian(-basierten) System, dessen `/` bereits auf einem benannten Btrfs-Subvolume liegt, macht das Skript Folgendes:
 
 - Prüft, dass `/` Btrfs ist und von einem benannten Subvolume läuft (z.B. `@`); bricht mit Hinweis auf `btrfs-layout-script` ab, falls nicht.
+- Erstellt vor der ersten Änderung einen read-only Btrfs-Guard-Snapshot des aktuellen Root-Subvolumes (z.B. `@.before-snapper-setup-...`) als manuellen Rücksetzpunkt, falls während der Einrichtung etwas schiefgeht.
 - Installiert `snapper` und `inotify-tools` (von `grub-btrfsd` benötigt, um neue Snapshots zu erkennen), falls nicht vorhanden.
-- Fragt in einem interaktiven Terminal ausdrücklich nach Bestätigung (Eingabe von "ja"), bevor irgendetwas verändert wird. Ohne Terminal (automatisierte Läufe) wird das übersprungen.
+- Fragt in einem interaktiven Terminal ausdrücklich nach Bestätigung (Eingabe von "ja"), bevor irgendetwas verändert wird. Ohne Terminal bricht das Skript ab, außer `LAYOUT_SCRIPT_ASSUME_YES=1` ist gesetzt.
 - Legt die Snapper-Konfiguration `root` an (idempotent — wird übersprungen, falls schon vorhanden); dabei entsteht `.snapshots` als nested Btrfs-Subvolume.
-- Trägt `.snapshots` als eigenen Eintrag in `/etc/fstab` ein und mountet es. Dieser Schritt ist notwendig: Ein nested Subvolume bleibt ein leeres Platzhalterverzeichnis, bis es selbst gemountet wird — ohne diesen Schritt wären weder Snapshot-Inhalte durchsuchbar, noch würde `grub-btrfs` etwas finden.
+- Trägt `.snapshots` als eigenen Eintrag in `/etc/fstab` ein und mountet es. Die alte `fstab` wird vorher gesichert und bei `findmnt --verify`- oder `mount -a`-Fehlern automatisch zurückgespielt.
 - Setzt eine SUSE-artige Timeline-Policy in `/etc/snapper/configs/root` (`TIMELINE_CREATE`, `TIMELINE_CLEANUP`, `NUMBER_CLEANUP` sowie konservative `TIMELINE_LIMIT_*`-Werte für stündlich/täglich/wöchentlich/monatlich/jährlich).
 - Installiert eigene `apt`-Hooks (`DPkg::Pre-Invoke`/`DPkg::Post-Invoke`), die rund um jede Paketänderung ein Pre-/Post-Snapshot-Paar anlegen — Debian/Ubuntu liefert diese Integration anders als das `zypp`-Plugin von openSUSE nicht mit, weshalb das Skript dafür kleine Wrapper-Skripte schreibt.
 - Aktiviert die systemd-Timer `snapper-timeline.timer` und `snapper-cleanup.timer`.
-- Installiert `grub-btrfs`, aktiviert den Dienst `grub-btrfsd` und führt `update-grub` (bzw. `grub-mkconfig`) aus, damit Snapshots als bootbare, read-only-Einträge im GRUB-Menü erscheinen.
+- Installiert `grub-btrfs`, falls das Paket in den konfigurierten APT-Quellen verfügbar ist, aktiviert dann `grub-btrfsd` und führt `update-grub` (bzw. `grub-mkconfig`) aus, damit Snapshots als bootbare, read-only-Einträge im GRUB-Menü erscheinen. Ist das Paket nicht verfügbar, läuft die Snapper-Einrichtung ohne GRUB-Menü-Integration weiter.
 
 ### Grenzen
 
-Snapshot-Browsing, das Diffen einzelner Dateien und ein read-only-Boot eines Snapshots über das GRUB-Menü (`grub-btrfs`) funktionieren mit diesem Setup vollständig. Ein vollständiger bootbarer **System-Rollback**, wie ihn `snapper rollback` unter openSUSE macht, setzt zusätzlich voraus, dass Root aus einem `.snapshots/<N>/snapshot`-Subvolume läuft — das ist bei einem einfachen `@`-Layout nicht automatisch der Fall und müsste bei Bedarf manuell nachgezogen werden (Default-Subvolume auf den gewünschten Snapshot umstellen und Bootloader aktualisieren).
+Snapshot-Browsing, das Diffen einzelner Dateien und ein read-only-Boot eines Snapshots über das GRUB-Menü (`grub-btrfs`) funktionieren mit diesem Setup, sofern `grub-btrfs` verfügbar ist. Der Guard-Snapshot ist bewusst read-only und dient als manueller Rücksetzpunkt: Für eine Wiederherstellung von einem Rettungssystem booten, das Btrfs-Top-Level mounten, aus dem Guard-Snapshot einen neuen schreibbaren Root-Snapshot erzeugen und Bootloader/fstab passend zurückstellen. Ein vollständiger bootbarer **System-Rollback**, wie ihn `snapper rollback` unter openSUSE macht, setzt zusätzlich voraus, dass Root aus einem `.snapshots/<N>/snapshot`-Subvolume läuft — das ist bei einem einfachen `@`-Layout nicht automatisch der Fall und müsste bei Bedarf manuell nachgezogen werden.
 
 ## Voraussetzungen
 
@@ -32,7 +33,7 @@ Snapshot-Browsing, das Diffen einzelner Dateien und ein read-only-Boot eines Sna
 - Root-Dateisystem bereits auf einem **benannten** Btrfs-Subvolume (falls nicht, zuerst [btrfs-layout-script](https://github.com/layout-scripts/btrfs-layout-script) ausführen).
 - Das Skript als **root** ausführen.
 
-Das Skript installiert bei Bedarf folgende Pakete: `snapper`, `inotify-tools`, `grub-btrfs`.
+Das Skript installiert bei Bedarf folgende Pakete: `snapper`, `inotify-tools`, optional `grub-btrfs`.
 
 ## Verwendung
 
@@ -50,6 +51,12 @@ Das Skript installiert bei Bedarf folgende Pakete: `snapper`, `inotify-tools`, `
    ```bash
    chmod +x setup-snapper.sh
    sudo ./setup-snapper.sh
+   ```
+
+   Für automatisierte Läufe ohne Terminal:
+
+   ```bash
+   sudo LAYOUT_SCRIPT_ASSUME_YES=1 ./setup-snapper.sh
    ```
 
 4. Prüfen:
