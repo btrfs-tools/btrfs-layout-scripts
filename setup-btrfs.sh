@@ -108,6 +108,58 @@ create_subvol() {
   fi
 }
 
+apt_package_available() {
+  local pkg="$1"
+  apt-cache show "$pkg" >/dev/null 2>&1
+}
+
+offer_optional_btrfs_tools() {
+  [[ -t 0 && -t 1 ]] || return 0
+
+  local -a tools=(
+    "timeshift:Einfache System-Restore-Snapshots"
+    "snapper:Server/CLI-Snapshotverwaltung für Btrfs"
+    "btrbk:Btrfs-Backups und Replikation per SSH"
+    "btrfsmaintenance:Scrub, Balance, Trim und Defrag planen"
+    "duperemove:Deduplizierung gleicher Btrfs-Extents"
+  )
+  local -a checklist_args=()
+  local -a selected_tools=()
+  local entry pkg desc selected
+
+  for entry in "${tools[@]}"; do
+    pkg="${entry%%:*}"
+    desc="${entry#*:}"
+    if apt_package_available "$pkg"; then
+      checklist_args+=("$pkg" "$desc" "OFF")
+    else
+      echo ">>> Optionales APT-Paket $pkg ist nicht verfügbar, überspringe."
+    fi
+  done
+
+  [[ ${#checklist_args[@]} -gt 0 ]] || return 0
+
+  need_pkg whiptail whiptail
+  if ! selected=$(whiptail --title "Optionale Btrfs-/Snapshot-Tools" \
+    --checklist "Diese Auswahl installiert nur normale APT-Pakete, keine Snap- oder Flatpak-Pakete. Alle Tools bleiben unkonfiguriert; Timeshift, Snapper, btrbk und Wartungsjobs müssen danach manuell eingerichtet werden.\nLeertaste = an-/abwählen, Enter = bestätigen." \
+    22 92 10 \
+    "${checklist_args[@]}" \
+    3>&1 1>&2 2>&3); then
+    echo ">>> Optionale Tool-Installation übersprungen."
+    return 0
+  fi
+
+  eval "selected_tools=($selected)"
+  [[ ${#selected_tools[@]} -gt 0 ]] || { echo ">>> Keine optionalen Tools ausgewählt."; return 0; }
+
+  echo ">>> Installiere optionale APT-Pakete: ${selected_tools[*]}"
+  if apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y "${selected_tools[@]}"; then
+    echo ">>> Optionale Tools installiert. Bitte Timeshift/Snapper/btrbk/btrfsmaintenance bei Bedarf manuell konfigurieren."
+  else
+    echo "WARNUNG: Optionale Tool-Installation ist fehlgeschlagen. Das Btrfs-Setup wird fortgesetzt." >&2
+  fi
+}
+
 # --- Mapping Quelle -> Subvolume (für Daten); einzige Quelle der Wahrheit für
 # Subvolume-Namen, Rsync-Ausschlüsse, Mountpoint-Vorbereitung, -Erzeugung und
 # fstab-Einträge (siehe SUBVOL_OPTS weiter unten) ---
@@ -517,6 +569,10 @@ if [[ $INCREMENTAL -eq 0 ]]; then
     echo "WARNUNG: /etc/default/grub nicht gefunden – GRUB nicht angepasst." >&2
   fi
 
+  # Im initialen Modus muessen optionale APT-Pakete vor der Root-Kopie
+  # installiert werden, damit Paketdateien und dpkg-Status in @ landen.
+  offer_optional_btrfs_tools
+
   # --- Root nach @ kopieren (JETZT, damit neue fstab & grub darin landen) ---
   # Verzeichnisse, die wirklich ihr eigenes Subvolume bekommen, hier
   # ausschliessen: sie wurden oben bereits per sync_dir befuellt und wuerden
@@ -631,6 +687,7 @@ if [[ $INCREMENTAL -eq 1 ]]; then
     exit 1
   fi
   restart_stopped_services
+  offer_optional_btrfs_tools
   echo ">>> FERTIG. Neue Subvolumes sind aktiv:"
   for entry in "${MAPS[@]}"; do
     findmnt -no TARGET,SOURCE,OPTIONS "${entry%%:*}" || true

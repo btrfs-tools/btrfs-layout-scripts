@@ -19,6 +19,14 @@ On a Debian (or Debian-based) system with a Btrfs root filesystem, the script:
 - Explicitly asks for confirmation in an interactive terminal (type "ja") before changing anything, with a warning about what the script does and that a failure can leave the system unbootable. Skipped without a terminal (automated runs).
 - Shows an interactive selection dialog (`whiptail`) when run in a terminal: universally sensible subvolumes (`@root`, `@home`, `@log`, `@cache`, `@tmp_var`, `@tmp`) are pre-selected, everything that depends on the software stack (databases, ClamAV, Docker/Podman, web server docroot) starts deselected — both freely adjustable. Deselected paths simply stay part of `@` without their own subvolume. Without an interactive terminal (e.g. automated runs), only the universally sensible subvolumes are created without prompting.
 - Stops known database, datastore, and container services before copying their data if they're currently running. In incremental mode they're restarted after the new mounts are active; in initial migration mode they stay stopped until the reboot — for a consistent copy instead of half-written files.
+- Offers an optional interactive APT-only tool selection, with short descriptions, for:
+  - `timeshift`: simple system restore snapshots.
+  - `snapper`: server/CLI snapshot management for Btrfs.
+  - `btrbk`: Btrfs backups and replication over SSH.
+  - `btrfsmaintenance`: scheduled scrub, balance, trim, and defrag tasks.
+  - `duperemove`: deduplication of matching Btrfs extents.
+
+  No Snap or Flatpak packages are installed, and the tools are only installed — not configured automatically.
 - Creates the following subvolumes (idempotent; if they already exist, they are reused):
 
   - `@` (new root)
@@ -116,6 +124,8 @@ The script will install the following packages if missing:
 
 - `rsync`
 - `btrfs-progs`
+
+In an interactive run, the script can also offer optional APT packages (`timeshift`, `snapper`, `btrbk`, `btrfsmaintenance`, `duperemove`) if they are available in the configured package repositories. These are skipped in automated/non-interactive runs.
 
 > Simplest on a **fresh server installation**, since every directory is small/empty there. The script also works on already-running systems, **provided there's enough free disk space** (checked automatically — every byte on `/` is briefly duplicated during migration). For a consistent copy, known database, datastore, and container services are automatically stopped before their respective data copy; in incremental mode they're restarted after `mount -a`, and in initial migration mode they stay stopped until the reboot.
 >

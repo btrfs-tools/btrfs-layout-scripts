@@ -19,6 +19,14 @@ En un sistema basado en Debian con root en Btrfs, el script:
 - Pide confirmación explícita en una terminal interactiva (escribir "ja") antes de cambiar nada, con una advertencia sobre lo que hace el script y que un fallo puede dejar el sistema sin arrancar. Se omite sin terminal (ejecuciones automatizadas).
 - Muestra un diálogo de selección interactivo (`whiptail`) si se ejecuta en una terminal: los subvolúmenes universalmente útiles (`@root`, `@home`, `@log`, `@cache`, `@tmp_var`, `@tmp`) están preseleccionados, todo lo que depende de la pila de software (bases de datos, ClamAV, Docker/Podman, docroot de servidor web) empieza deseleccionado — ambos ajustables libremente. Las rutas deseleccionadas simplemente se quedan en `@` sin subvolumen propio. Sin terminal interactiva (por ejemplo, ejecuciones automatizadas), solo se crean los subvolúmenes universalmente útiles sin preguntar.
 - Detiene servicios conocidos de bases de datos, datastores y contenedores antes de copiar sus datos si están activos. En modo incremental se reinician después de activar los nuevos montajes; en la migración inicial quedan detenidos hasta el reinicio — para una copia consistente en lugar de archivos a medio escribir.
+- Ofrece opcionalmente una selección interactiva solo con paquetes APT, con descripciones breves, para:
+  - `timeshift`: snapshots sencillos de restauración del sistema.
+  - `snapper`: gestión de snapshots Btrfs para servidor/CLI.
+  - `btrbk`: backups Btrfs y replicación por SSH.
+  - `btrfsmaintenance`: tareas programadas de scrub, balance, trim y defrag.
+  - `duperemove`: deduplicación de extents Btrfs coincidentes.
+
+  No se instalan paquetes Snap ni Flatpak, y las herramientas solo se instalan — no se configuran automáticamente.
 - Crea (de forma idempotente) los siguientes subvolúmenes:
 
   - `@` (nuevo root)
@@ -116,6 +124,8 @@ El script instalará automáticamente, si faltan:
 
 - `rsync`
 - `btrfs-progs`
+
+En una ejecución interactiva, el script también puede ofrecer paquetes APT opcionales (`timeshift`, `snapper`, `btrbk`, `btrfsmaintenance`, `duperemove`) si están disponibles en los repositorios configurados. En ejecuciones automatizadas/no interactivas esta selección se omite.
 
 > Lo más sencillo es usarlo en una **instalación nueva de servidor**, ya que ahí todos los directorios están vacíos o son pequeños. Pero el script también funciona en sistemas ya en producción, **siempre que haya suficiente espacio libre** (se comprueba automáticamente — cada byte en `/` se duplica brevemente durante la migración). Para una copia consistente, los servicios conocidos de bases de datos, datastores y contenedores se detienen automáticamente antes de copiar sus datos; en modo incremental se reinician después de `mount -a` y en la migración inicial quedan detenidos hasta el reinicio.
 >

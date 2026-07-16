@@ -19,6 +19,14 @@ Auf einem Debian- (oder Debian-basierten) System mit Btrfs-Root führt das Skrip
 - Fragt in einem interaktiven Terminal ausdrücklich nach ("ja" eintippen), bevor irgendetwas verändert wird — samt Warnhinweis, was das Skript tut und dass ein Fehlschlag das System unbootbar machen kann. Ohne Terminal (automatisierte Läufe) wird die Abfrage übersprungen.
 - Zeigt in einem interaktiven Terminal einen Auswahldialog (`whiptail`): universell sinnvolle Subvolumes (`@root`, `@home`, `@log`, `@cache`, `@tmp_var`, `@tmp`) sind vorausgewählt, alle vom Software-Stack abhängigen (Datenbanken, ClamAV, Docker/Podman, Webserver-Docroot) starten abgewählt — beides frei änderbar. Abgewählte Pfade bekommen kein eigenes Subvolume und bleiben einfach Teil von `@`. Ohne interaktives Terminal (z.B. bei automatisierter Ausführung) werden nur die universell sinnvollen Subvolumes ohne Nachfrage angelegt.
 - Stoppt bekannte Datenbank-, Datastore- und Container-Dienste vor deren Datenkopie, falls sie gerade laufen. Im inkrementellen Modus werden sie nach aktiven neuen Mounts neu gestartet; im initialen Migrationsmodus bleiben sie bis zum Reboot gestoppt — für eine konsistente Kopie statt halbgeschriebener Dateien.
+- Bietet optional eine interaktive APT-Auswahl mit Kurzbeschreibungen für:
+  - `timeshift`: einfache System-Restore-Snapshots.
+  - `snapper`: Server-/CLI-Snapshotverwaltung für Btrfs.
+  - `btrbk`: Btrfs-Backups und Replikation per SSH.
+  - `btrfsmaintenance`: geplante Scrub-, Balance-, Trim- und Defrag-Aufgaben.
+  - `duperemove`: Deduplizierung gleicher Btrfs-Extents.
+
+  Es werden keine Snap- oder Flatpak-Pakete installiert, und die Tools werden nur installiert — nicht automatisch konfiguriert.
 - Legt (idempotent) folgende Subvolumes an:
 
   - `@` (neues Root)
@@ -116,6 +124,8 @@ Bei Bedarf installiert das Skript automatisch:
 
 - `rsync`
 - `btrfs-progs`
+
+In einem interaktiven Lauf kann das Skript außerdem optionale APT-Pakete (`timeshift`, `snapper`, `btrbk`, `btrfsmaintenance`, `duperemove`) anbieten, sofern sie in den konfigurierten Paketquellen verfügbar sind. In automatisierten/nicht interaktiven Läufen wird diese Auswahl übersprungen.
 
 > Am unkompliziertesten auf einer **frischen Server-Installation**, da dort alle Verzeichnisse klein/leer sind. Das Skript funktioniert aber auch auf bereits laufenden Systemen, **sofern genug freier Speicherplatz vorhanden ist** (wird automatisch geprüft – jedes Byte auf `/` wird während der Migration kurzzeitig dupliziert). Für eine konsistente Kopie werden bekannte Datenbank-, Datastore- und Container-Dienste vor ihrer jeweiligen Datenkopie automatisch gestoppt; im inkrementellen Modus nach `mount -a` neu gestartet und im initialen Migrationsmodus bis zum Reboot gestoppt gelassen.
 >
