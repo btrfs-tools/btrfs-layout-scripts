@@ -166,6 +166,8 @@ offer_optional_btrfs_tools() {
 # Subvolume-Namen, Rsync-Ausschlüsse, Mountpoint-Vorbereitung, -Erzeugung und
 # fstab-Einträge (siehe SUBVOL_OPTS weiter unten) ---
 declare -a ALL_MAPS=(
+# Allgemeine Systempfade: sinnvoll auf so gut wie jedem Server, unabhaengig
+# vom installierten Software-Stack. Stehen deshalb im Auswahldialog oben.
 "/root:@root"
 "/home:@home"
 "/var/spool:@spool"
@@ -175,16 +177,18 @@ declare -a ALL_MAPS=(
 "/srv:@srv"
 "/tmp:@tmp"
 "/opt:@opt"
-"/var/lib/containers:@containers"
-# Feste, versionsunabhaengige Pfade fuer benannte Volumes von Docker/Podman
-# (getrennt von @docker/@containers, damit Volume-Daten gezielt von
+"/var/www:@www"
+# Container-Engines und ihre benannten Volumes. Volume-Subvolumes stehen
+# direkt hinter ihrem Eltern-Subvolume (Zugehoerigkeit im Dialog erkennbar)
+# und sind getrennt von @docker/@containers, damit Volume-Daten gezielt von
 # Kompression ausgenommen werden koennen, waehrend Image-Layer/Metadaten
-# weiterhin von compress=zstd profitieren). Direkt hinter dem jeweiligen
-# Eltern-Subvolume einsortiert, damit die Zugehoerigkeit auch im
-# Auswahldialog erkennbar bleibt.
+# weiterhin von compress=zstd profitieren.
+"/var/lib/containers:@containers"
 "/var/lib/containers/storage/volumes:@containers-volumes"
 "/var/lib/docker:@docker"
 "/var/lib/docker/volumes:@docker-volumes"
+# Datenbank-/Datastore-Pfade: stark vom konkreten Software-Stack abhaengig,
+# deshalb im Auswahldialog ganz unten.
 "/var/lib/mongodb:@mongodb"
 "/var/lib/mysql:@mysql"
 "/var/lib/postgresql:@postgresql"
@@ -198,7 +202,6 @@ declare -a ALL_MAPS=(
 "/var/lib/couchdb:@couchdb"
 "/var/lib/neo4j:@neo4j"
 "/var/lib/rabbitmq:@rabbitmq"
-"/var/www:@www"
 )
 
 # fstab-Mount-Optionen je Subvolume. Btrfs-Mountoptionen wie compress,
