@@ -1,6 +1,11 @@
-# btrfs-layout-script
+# btrfs-layout
 
-`setup-btrfs.sh` hilft dabei, einen **Debian-, Ubuntu- oder anderen Debian-basierten Server mit einer einzelnen Btrfs-Root-Partition** in ein System mit sauberer Subvolume-Struktur zu verwandeln – geeignet für Timeshift und Container-Workloads. Funktioniert sowohl beim einmaligen Umstieg auf einer frischen Installation als auch nachträglich auf einem bereits laufenden, migrierten System, um dort noch fehlende Subvolumes zu ergänzen (kein Neustart nötig).
+Zwei Skripte, die aus einem Debian-, Ubuntu- oder anderen Debian-basierten Server ein gut organisiertes, snapshot-fähiges Btrfs-System machen:
+
+- **`setup-btrfs.sh`** — migriert eine einzelne Btrfs-Root-Partition in eine saubere Subvolume-Struktur, geeignet für Timeshift und Container-Workloads.
+- **`setup-snapper.sh`** — sobald Root von einem benannten Subvolume läuft, ergänzt das ein SUSE-artiges Snapper-Setup: Timeline-Snapshots, Snapshots rund um jede `apt`-Änderung und über GRUB bootbare Snapshots via `grub-btrfs`.
+
+Zuerst `setup-btrfs.sh` ausführen; `setup-snapper.sh` setzt ein benanntes Root-Subvolume voraus und weist darauf hin, falls das noch nicht der Fall ist.
 
 ## Sprachen
 
@@ -8,11 +13,15 @@
 - Deutsch (diese Datei)
 - [Español](README.es.md)
 
-## Was das Skript macht
+## setup-btrfs.sh
+
+`setup-btrfs.sh` hilft dabei, einen **Debian-, Ubuntu- oder anderen Debian-basierten Server mit einer einzelnen Btrfs-Root-Partition** in ein System mit sauberer Subvolume-Struktur zu verwandeln – geeignet für Timeshift und Container-Workloads. Funktioniert sowohl beim einmaligen Umstieg auf einer frischen Installation als auch nachträglich auf einem bereits laufenden, migrierten System, um dort noch fehlende Subvolumes zu ergänzen (kein Neustart nötig).
+
+### Was das Skript macht
 
 Auf einem Debian- (oder Debian-basierten) System mit Btrfs-Root führt das Skript im Wesentlichen aus:
 
-- Ermittelt das aktuelle Root-Device per `findmnt` (z. B. `/dev/vda2[/@rootfs]` → `/dev/vda2`).
+- Ermittelt das aktuelle Root-Device per `findmnt` (z. B. `/dev/vda2[/@rootfs]` → `/dev/vda2`).
 - Mountet das Btrfs-Top-Level (`subvolid=5`) nach `/mnt/btrfs-root`.
 - Prüft vorab den freien Speicherplatz (jedes Byte auf `/` wird während der Migration kurzzeitig dupliziert) und bricht ab, wenn es eng wird.
 - Erkennt eine schon (teilweise) durchgeführte Migration und wechselt automatisch in einen **inkrementellen Modus**: Läuft `/` bereits von einem benannten Subvolume, werden Root, GRUB und das Default-Subvolume nicht mehr angefasst — es werden nur noch fehlende Subvolumes für noch nicht separat gemountete Pfade ergänzt, sofort aktiv, ohne Neustart. Jeder Zielpfad wird einzeln klassifiziert: bereits korrekt eingerichtet (übersprungen, taucht im Auswahldialog gar nicht erst auf), anderweitig belegt (übersprungen mit Warnung, wird nicht überschrieben), oder noch offen (Kandidat für die Auswahl).
@@ -113,12 +122,12 @@ Das Ergebnis:
 - Root läuft von `@` (Timeshift-kompatibel).
 - Wichtige Pfade wie `/home`, `/var/log`, `/var/lib/docker`, `/var/www` liegen auf eigenen Subvolumes.
 
-## Voraussetzungen
+### Voraussetzungen
 
 - Debian oder Debian-basiertes System mit:
   - `apt`
   - `systemd`
-- Root-Dateisystem ist **Btrfs** auf einem einzelnen Device (z. B. eine Btrfs-Partition `/dev/vda2`); **LVM nicht** für das Root-Dateisystem aktivieren.
+- Root-Dateisystem ist **Btrfs** auf einem einzelnen Device (z. B. eine Btrfs-Partition `/dev/vda2`); **LVM nicht** für das Root-Dateisystem aktivieren.
 - Das Skript wird als **root** ausgeführt.
 
 Bei Bedarf installiert das Skript automatisch:
@@ -132,12 +141,12 @@ In einem interaktiven Lauf kann das Skript außerdem optionale APT-Pakete (`time
 >
 > Trotzdem gilt auf laufenden Systemen: mach vorher ein Backup, plane ein Wartungsfenster für den abschließenden Neustart ein, und bedenke, dass Anwendungen **außerhalb** dieser Liste (z. B. ein eigener Webserver-Prozess mit offenen Dateien in `/srv` oder `/var/www`) während der Kopie weiterlaufen und dadurch theoretisch eine inkonsistente Momentaufnahme in ihr Subvolume bekommen könnten.
 
-## Verwendung
+### Verwendung
 
 1. Debian so installieren, dass du erhältst:
 
-   - eine kleine EFI-Partition (z. B. `/dev/vda1`)
-   - eine große Btrfs-Partition als Root (z. B. `/dev/vda2`)
+   - eine kleine EFI-Partition (z. B. `/dev/vda1`)
+   - eine große Btrfs-Partition als Root (z. B. `/dev/vda2`)
    - LVM für das Root-Dateisystem nicht ausgewählt/aktiviert ist
 
 2. Als root anmelden (oder `sudo` verwenden).
@@ -145,8 +154,8 @@ In einem interaktiven Lauf kann das Skript außerdem optionale APT-Pakete (`time
 3. Repository klonen:
 
    ```bash
-   git clone https://github.com/<dein-user>/btrfs-layout-script.git
-   cd btrfs-layout-script
+   git clone https://github.com/layout-scripts/btrfs-layout.git
+   cd btrfs-layout
    ```
 
 4. Skript ausführbar machen:
@@ -195,8 +204,66 @@ In einem interaktiven Lauf kann das Skript außerdem optionale APT-Pakete (`time
 
 Damit ist das Layout für Timeshift und Container-Workloads vorbereitet.
 
+## setup-snapper.sh
+
+`setup-snapper.sh` macht aus einem Debian-, Ubuntu- oder anderen Debian-basierten Server, dessen Root-Dateisystem bereits von einem benannten Btrfs-Subvolume läuft (z.B. via `setup-btrfs.sh` oben), ein SUSE-artiges Snapper-Setup: automatische Timeline-Snapshots, Snapshots rund um jede `apt`-Paketänderung und Snapshots, die direkt aus dem GRUB-Menü über `grub-btrfs` bootbar sind.
+
+### Was das Skript tut
+
+Auf einem Debian(-basierten) System, dessen `/` bereits auf einem benannten Btrfs-Subvolume liegt, macht das Skript Folgendes:
+
+- Prüft, dass `/` Btrfs ist und von einem benannten Subvolume läuft (z.B. `@`); bricht mit Hinweis auf `setup-btrfs.sh` ab, falls nicht.
+- Erstellt vor der ersten Änderung einen read-only Btrfs-Guard-Snapshot des aktuellen Root-Subvolumes (z.B. `@.before-snapper-setup-...`) als manuellen Rücksetzpunkt, falls während der Einrichtung etwas schiefgeht.
+- Installiert `snapper` und `inotify-tools` (von `grub-btrfsd` benötigt, um neue Snapshots zu erkennen), falls nicht vorhanden.
+- Fragt in einem interaktiven Terminal ausdrücklich nach Bestätigung (Eingabe von "ja"), bevor irgendetwas verändert wird. Ohne Terminal bricht das Skript ab, außer `LAYOUT_SCRIPT_ASSUME_YES=1` ist gesetzt.
+- Legt die Snapper-Konfiguration `root` an (idempotent — wird übersprungen, falls schon vorhanden); dabei entsteht `.snapshots` als nested Btrfs-Subvolume.
+- Trägt `.snapshots` als eigenen Eintrag in `/etc/fstab` ein und mountet es. Die alte `fstab` wird vorher gesichert und bei `findmnt --verify`- oder `mount -a`-Fehlern automatisch zurückgespielt.
+- Setzt eine SUSE-artige Timeline-Policy in `/etc/snapper/configs/root` (`TIMELINE_CREATE`, `TIMELINE_CLEANUP`, `NUMBER_CLEANUP` sowie konservative `TIMELINE_LIMIT_*`-Werte für stündlich/täglich/wöchentlich/monatlich/jährlich).
+- Installiert eigene `apt`-Hooks (`DPkg::Pre-Invoke`/`DPkg::Post-Invoke`), die rund um jede Paketänderung ein Pre-/Post-Snapshot-Paar anlegen — Debian/Ubuntu liefert diese Integration anders als das `zypp`-Plugin von openSUSE nicht mit, weshalb das Skript dafür kleine Wrapper-Skripte schreibt.
+- Aktiviert die systemd-Timer `snapper-timeline.timer` und `snapper-cleanup.timer`.
+- Installiert `grub-btrfs`, falls das Paket in den konfigurierten APT-Quellen verfügbar ist, aktiviert dann `grub-btrfsd` und führt `update-grub` (bzw. `grub-mkconfig`) aus, damit Snapshots als bootbare, read-only-Einträge im GRUB-Menü erscheinen. Ist das Paket nicht verfügbar, läuft die Snapper-Einrichtung ohne GRUB-Menü-Integration weiter.
+
+### Grenzen
+
+Snapshot-Browsing, das Diffen einzelner Dateien und ein read-only-Boot eines Snapshots über das GRUB-Menü (`grub-btrfs`) funktionieren mit diesem Setup, sofern `grub-btrfs` verfügbar ist. Der Guard-Snapshot ist bewusst read-only und dient als manueller Rücksetzpunkt: Für eine Wiederherstellung von einem Rettungssystem booten, das Btrfs-Top-Level mounten, aus dem Guard-Snapshot einen neuen schreibbaren Root-Snapshot erzeugen und Bootloader/fstab passend zurückstellen. Ein vollständiger bootbarer **System-Rollback**, wie ihn `snapper rollback` unter openSUSE macht, setzt zusätzlich voraus, dass Root aus einem `.snapshots/<N>/snapshot`-Subvolume läuft — das ist bei einem einfachen `@`-Layout nicht automatisch der Fall und müsste bei Bedarf manuell nachgezogen werden.
+
+### Voraussetzungen
+
+- Debian oder Debian-basiertes System mit `apt` und `systemd`.
+- Root-Dateisystem bereits auf einem **benannten** Btrfs-Subvolume (falls nicht, zuerst `setup-btrfs.sh` oben ausführen).
+- Das Skript als **root** ausführen.
+
+Das Skript installiert bei Bedarf folgende Pakete: `snapper`, `inotify-tools`, optional `grub-btrfs`.
+
+### Verwendung
+
+1. Sicherstellen, dass `/` bereits von einem benannten Btrfs-Subvolume läuft (siehe `setup-btrfs.sh` oben).
+
+2. Skript ausführbar machen und starten:
+
+   ```bash
+   chmod +x setup-snapper.sh
+   sudo ./setup-snapper.sh
+   ```
+
+   Für automatisierte Läufe ohne Terminal:
+
+   ```bash
+   sudo LAYOUT_SCRIPT_ASSUME_YES=1 ./setup-snapper.sh
+   ```
+
+3. Prüfen:
+
+   ```bash
+   snapper list-configs
+   snapper create -d test && snapper list && snapper delete <Nummer>
+   systemctl status snapper-timeline.timer snapper-cleanup.timer grub-btrfsd
+   ```
+
+   Ein kleines Paket installieren/entfernen, um zu prüfen, dass die `apt`-Hooks ein Pre-/Post-Snapshot-Paar erzeugen, und neu starten, um zu prüfen, dass das GRUB-Menü ein Snapshot-Untermenü zeigt.
+
 ## Lizenz
 
-Dieses Projekt steht unter der **GNU General Public License Version 3 oder neuer (GPL-3.0-or-later)**.
+Dieses Projekt steht unter der **GNU General Public License v3.0 oder später (GPL-3.0-or-later)**.
 
-Details findest du in der Datei `LICENSE`.
+Details siehe Datei `LICENSE`.
